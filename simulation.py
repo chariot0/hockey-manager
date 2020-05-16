@@ -29,11 +29,13 @@ class Simulation:
     DEFENDER = 0
     ATTACKER = 1
 
+    GOALIE_CONTROL_DIFFERENTIAL = 25
+
     SECURING_A_SHOT_BONUS = 10
     is_securing_a_shot_bonus = False
-
+    
     # in seconds
-    time_remaining =  3600
+    time_remaining = 120
 
     # multiple states being managed
     current_zone = None  # None or 1-4
@@ -52,15 +54,7 @@ class Simulation:
     home_save = 0
     away_save = 0
 
-    def __init__(self, home_stat, away_stat):
-        """ This currently accepts only one stat per team.  This should
-        eventually accept a team object for each team which will then
-        serve the appropriate stat when asked.
-
-        Arguments:
-            home_stat {int} -- [stat used for home team]
-            away_stat {int} -- [stat used for away team]
-        """
+    def __init__(self, home_team, away_team):
         logfile = Path(__file__, '..', 'simulation.log').resolve()
         logging.basicConfig(
             level=logging.DEBUG,
@@ -68,13 +62,12 @@ class Simulation:
             filename=logfile,
             filemode="w"
         )
-        # These will go away when we use Team objedts
-        self.home_stat = home_stat
-        self.away_stat = away_stat
 
+        self.home_team = home_team
+        self.away_team = away_team
 
     def __repr__(self):
-        return f"Simulation({self.home_stat}, {self.away_stat})"
+        return f"Simulation({self.home_team}, {self.away_team})"
 
     def __str__(self):
         output = f"Time Remaining: {self.time_remaining}; {'Not i' if not self.in_play else 'I'}n play.  "
@@ -169,7 +162,7 @@ class Simulation:
         loser_fumble = False
 
         attack_roll = randint(1, 100)
-        defense_roll = 80  # randint(1, 100)
+        defense_roll = randint(1, 100)
         attack_result = attack - attack_roll
         defense_result = defense - defense_roll
 
@@ -194,6 +187,25 @@ class Simulation:
         logging.debug(results)
         return results
 
+    def skill_test(self, skill):
+        logging.debug(f"skill_test({skill})")
+
+        skill_test_result = namedtuple("skill_test_result", "score, critical")
+ 
+        critical = False
+
+        skill_roll = randint(1,100)
+        score = skill - skill_roll
+
+        if skill_roll in self.CRITICAL or skill_roll in self.FUMBLE:
+            critical = True
+
+        logging.debug(f"Score: {score}; Critical: {critical}")
+
+        result = skill_test_result(score, critical)
+        return result
+
+
     def face_off(self):
         """ when puck is not in play, a face off is done to start play and
         try to determine who gets possession of the puck 
@@ -205,8 +217,7 @@ class Simulation:
             logging.warning(f"FaceOff called while someone had possession of the puck: {self.puck_possession}")
             return
 
-        results = self.contest(self.away_stat, self.home_stat)
-        # results = self.contest(self.HomeTeam.FaceOff, self.AwayTeam.FaceOff)
+        results = self.contest(self.away_team.face_off, self.home_team.face_off)
         self.puck_possession = results.winner
         self.in_play = True
         if results.winner is not None:
@@ -227,8 +238,7 @@ class Simulation:
     def reclaiming_the_puck(self):
         """ when the puck is in play, but the puck is loose """
         logging.debug("reclaiming_the_puck()")
-        results = self.contest(self.away_stat, self.home_stat)
-        # results = self.contest(self.AwayTeam.overall_offensive, self.HomeTeam.overall_offensive)
+        results = self.contest(self.away_team.overall_offensive, self.home_team.overall_offensive)
         self.puck_possession = results.winner
         if results.winner is not None:
             if self.current_zone == None:
@@ -247,15 +257,18 @@ class Simulation:
     def moving_the_puck(self):
         """ puck in play, puck is in possession by a team """
         logging.debug("moving_the_puck()")
-        if self.puck_possession == self.HOME:
-            attack = self.home_stat
-            defense = self.away_stat
-        else:
-            attack = self.away_stat
-            defense = self.home_stat
+        if self.in_play is False or self.puck_possession is None:
+            return
 
-        results = self.contest(attack, defense)
-        #results = self.contest(self.___.overall_offensive, self.___.overall_defensive)
+        if self.puck_possession == self.HOME:
+            attack = self.home_team
+            defense = self.away_team
+        else:
+            attack = self.away_team
+            defense = self.home_team
+
+        #results = self.contest(attack, defense)
+        results = self.contest(attack.overall_offensive, defense.overall_defensive)
         if results.winner == self.ATTACKER:
             # attacker moves puck
             self.move_forward()
@@ -281,16 +294,18 @@ class Simulation:
         attacking zone.  securing a shot will determine if the team can
         get a shot on goal
         """
+        if self.in_play is None or self.puck_possession is None or self.current_zone != self.attacking_zone:
+            return
+
         logging.debug("securing_a_shot()")
         if self.puck_possession == self.HOME:
-            attack = self.home_stat
-            defense = self.away_stat
+            attack = self.home_team
+            defense = self.away_team
         else:
-            attack = self.away_stat
-            defense = self.home_stat
+            attack = self.away_team
+            defense = self.home_team
 
-        results = self.contest(attack, defense)
-        #results = self.contest(self.___.overall_offensive, self.___.overall_defensive)
+        results = self.contest(attack.overall_offensive, defense.overall_defensive)
 
         if results.winner == self.ATTACKER:
             self.is_shooting = True
@@ -310,55 +325,57 @@ class Simulation:
 
     def take_a_shot(self):
         logging.debug("take_a_shot()")
+        if self.is_shooting is False or self.puck_possession is None or self.current_zone != self.attacking_zone:
+            return
+
         self.is_shooting = False
         if self.puck_possession == self.HOME:
-            attack = self.home_stat
-            defense = self.away_stat
+            attack = self.home_team
+            defense = self.away_team
         else:
-            attack = self.away_stat
-            defense = self.home_stat
+            attack = self.away_team
+            defense = self.home_team
 
-        """instead of calling a single contest this will be split up into two
-        rolls.  First by the shooter to see if they can get the puck to the goal.
-        If that succeeds a second roll will be done by the goalie to see if they
-        block the shot."""
-        results = self.contest(attack, defense)
-        #results = self.contest(self.___.shooting, self.___.blocking)
-
-        if results.winner == self.ATTACKER:
-            # score
+        shooter_result = self.skill_test(attack.shooting)
+        if shooter_result.score <= 0:
+            # missed shot
+            if shooter_result.critical is True:
+                # defense steals the puck
+                self.puck_possession_flip()
+            else:
+                # loose puck
+                self.puck_possession = None
+        else:
+            # shot on goal
             if self.puck_possession == self.HOME:
-                self.home_score += 1
                 self.home_sog += 1
             else:
-                self.away_score += 1
                 self.away_sog += 1
-            self.in_play = False
-            self.puck_possession = None
-            self.current_zone = None
-            '''TODO Might be fun to consider a winner_critical to be a
-            highlight of the game'''
+            logging.debug("Shot on goal!")
 
-        elif results.winner == self.DEFENDER:
-            if results.loser_fumble:
-                self.puck_possession_flip()
-                self.move_forward()
-            elif results.winner_critical:
-                self.puck_possession_flip()
-            else:
-                self.in_play = False
-                self.puck_possession = None
-
+            goalie_result = self.skill_test(defense.blocking)
+            if goalie_result.score < shooter_result.score:
+                # shooter scores
                 if self.puck_possession == self.HOME:
-                    self.home_sog += 1
+                    self.home_score += 1
+                else:
+                    self.away_score += 1
+                self.puck_possession = None
+                self.current_zone = None
+                self.in_play = False
+                logging.debug("Shooter scores!")
+            elif goalie_result.score < shooter_result.score + self.GOALIE_CONTROL_DIFFERENTIAL:
+                # blocked, puck loose
+                if self.puck_possession == self.HOME:
                     self.away_save += 1
                 else:
                     self.home_save += 1
-                    self.away_sog += 1
-
-        else:
-            #puck is loose
-            self.puck_possession = None
+                self.puck_possession = None
+                logging.debug("Blocked shot, puck is loose!")
+            else:
+                # blocked, goalie controls
+                self.puck_possession_flip()
+                logging.debug("Blocked shot, possession flips")
 
         self.time_remaining -= self.TAKING_A_SHOT_TIME
 
@@ -366,10 +383,10 @@ class Simulation:
         pass
 
     def run(self):
+        logging.debug(self)
 
         # game loop
         while self.time_remaining > 0:
-            logging.debug(self)
 
             if self.in_play is False:
                 self.face_off()
@@ -380,15 +397,13 @@ class Simulation:
             elif self.is_shooting is True:
                 self.take_a_shot()
 
-            elif (
-                self.puck_possession == self.HOME and self.current_zone == 4
-            ) or (
-                self.puck_possession == self.AWAY and self.current_zone == 1
-            ):
+            elif self.current_zone == self.attacking_zone:
                 self.securing_a_shot()
 
             else:
                 self.moving_the_puck()
+
+            logging.debug(self)
 
         self.print_results()
 
@@ -399,7 +414,3 @@ class Simulation:
         output += f"Saves{' '*5}{str(self.home_save):10s}{str(self.away_save):10s}\n"
        
         print(output)
-
-if __name__ == "__main__":
-    s = Simulation(75,75)
-    s.run()
